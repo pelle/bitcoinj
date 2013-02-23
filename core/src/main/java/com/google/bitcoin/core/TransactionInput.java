@@ -174,7 +174,7 @@ public class TransactionInput extends ChildMessage implements Serializable {
             throw new ScriptException(
                     "This is a coinbase transaction which generates new coins. It does not have a from address.");
         }
-        return getScriptSig().getFromAddress();
+        return  new Address(params, Utils.sha256hash160(getPubKey()));
     }
 
     /**
@@ -247,12 +247,20 @@ public class TransactionInput extends ChildMessage implements Serializable {
         if (isCoinBase())
             return "TxIn: COINBASE";
         try {
-            return "TxIn from tx " + outpoint + " (pubkey: " + Utils.bytesToHexString(getScriptSig().getPubKey()) +
+            return "TxIn from tx " + outpoint + " (pubkey: " + Utils.bytesToHexString(getPubKey()) +
                     ") script:" +
                     getScriptSig().toString();
         } catch (ScriptException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public byte[] getPubKey() throws ScriptException {
+        if (getScriptPubKey().isSentToAddress())
+            return getScriptSig().getPubKey();
+        else if (getScriptPubKey().isSentToRawPubKey())
+            return getScriptPubKey().getPubKey();
+        else return null;
     }
 
     enum ConnectionResult {
@@ -346,10 +354,19 @@ public class TransactionInput extends ChildMessage implements Serializable {
      */
     public void verify() throws ScriptException {
         Preconditions.checkNotNull(getOutpoint().fromTx, "Not connected");
-        long spendingIndex = getOutpoint().getIndex();
-        Script pubKey = getOutpoint().fromTx.getOutputs().get((int) spendingIndex).getScriptPubKey();
+        Script pubKey = getScriptPubKey();
         Script sig = getScriptSig();
         int myIndex = parentTransaction.getInputs().indexOf(this);
         sig.correctlySpends(parentTransaction, myIndex, pubKey, true);
     }
+
+    public Script getScriptPubKey() throws ScriptException {
+        return checkNotNull(getConnectedOutput()).getScriptPubKey();
+    }
+
+    public TransactionOutput getConnectedOutput() {
+        return getOutpoint().getConnectedOutput();
+    }
+
+
 }
