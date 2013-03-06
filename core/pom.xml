@@ -170,6 +170,12 @@
             <optional>true</optional>
         </dependency>
 
+        <dependency>
+        	<groupId>postgresql</groupId>
+        	<artifactId>postgresql</artifactId>
+        	<version>9.1-901.jdbc4</version>
+        </dependency>
+
 	    <dependency>
 	        <groupId>io.netty</groupId>
 	        <artifactId>netty</artifactId>
