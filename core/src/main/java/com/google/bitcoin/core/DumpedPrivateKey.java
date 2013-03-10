@@ -16,10 +16,11 @@
 
 package com.google.bitcoin.core;
 
+import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
-import org.spongycastle.util.Arrays;
 
 import java.math.BigInteger;
+import java.util.Arrays;
 
 /**
  * Parses and generates private keys in the form used by the Bitcoin "dumpprivkey" command. This is the private key
@@ -75,5 +76,26 @@ public class DumpedPrivateKey extends VersionedChecksummedBytes {
      */
     public ECKey getKey() {
         return new ECKey(new BigInteger(1, bytes), null, compressed);
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        // This odd construction is to avoid anti-symmetry of equality: where a.equals(b) != b.equals(a).
+        boolean result = false;
+        if (other instanceof VersionedChecksummedBytes) {
+            result = Arrays.equals(bytes, ((VersionedChecksummedBytes)other).bytes);
+        }
+        if (other instanceof DumpedPrivateKey) {
+            DumpedPrivateKey o = (DumpedPrivateKey) other;
+            result = Arrays.equals(bytes, o.bytes) &&
+                     version == o.version &&
+                     compressed == o.compressed;
+        }
+        return result;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hashCode(bytes, version, compressed);
     }
 }

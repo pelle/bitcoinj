@@ -286,7 +286,7 @@ public class Wallet implements Serializable, BlockChainListener {
         createTransientState();
     }
 
-    private void createTransientState() {
+    private synchronized void createTransientState() {
         eventListeners = new ArrayList<WalletEventListener>();
         ignoreNextNewBlock = new HashSet<Sha256Hash>();
         txConfidenceListener = new TransactionConfidence.Listener() {
@@ -1512,7 +1512,7 @@ public class Wallet implements Serializable, BlockChainListener {
          * don't really control as it depends on who sent you money), and the value being sent somewhere else. The
          * change address should be selected from this wallet, normally. <b>If null this will be chosen for you.</b>
          */
-        public Address changeAddress;
+        public Address changeAddress = null;
 
         /**
          * A transaction can have a fee attached, which is defined as the difference between the input values
@@ -2392,7 +2392,7 @@ public class Wallet implements Serializable, BlockChainListener {
      * See the docs for {@link BloomFilter#BloomFilter(int, double)} for a brief explanation of anonymity when using bloom filters.
      */
     public BloomFilter getBloomFilter(double falsePositiveRate) {
-        return getBloomFilter(getBloomFilterElementCount(), falsePositiveRate, new Random().nextLong());
+        return getBloomFilter(getBloomFilterElementCount(), falsePositiveRate, (long)(Math.random()*Long.MAX_VALUE));
     }
     
     /**

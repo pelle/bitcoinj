@@ -726,6 +726,7 @@ public class Script {
                         sigOps += getOpNValue(lastOpCode);
                     else
                         sigOps += 20;
+                    break;
                 default:
                     break;
                 }
@@ -836,7 +837,7 @@ public class Script {
             if (!skip) {
                 try {
                     bos.write(opcode);
-                    bos.write(Arrays.copyOfRange(inputScript, cursor, cursor + additionalBytes));
+                    bos.write(copyOfRange(inputScript, cursor, cursor + additionalBytes));
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
@@ -845,7 +846,22 @@ public class Script {
         }
         return bos.toByteArray();
     }
-    
+
+    private static byte[] copyOfRange(byte[] original, int start, int end) {
+        if (start > end) {
+            throw new IllegalArgumentException();
+        }
+        int originalLength = original.length;
+        if (start < 0 || start > originalLength) {
+            throw new ArrayIndexOutOfBoundsException();
+        }
+        int resultLength = end - start;
+        int copyLength = Math.min(resultLength, originalLength - start);
+        byte[] result = new byte[resultLength];
+        System.arraycopy(original, start, result, 0, copyLength);
+        return result;
+    }
+
     /**
      * Returns the script bytes of inputScript with all instances of the given op code removed
      */
@@ -1181,6 +1197,8 @@ public class Script {
                         else
                             numericOPnum = BigInteger.ONE;
                         break;
+                    default:
+                        throw new AssertionError("Unreachable");
                     }
                     
                     stack.add(Utils.reverseBytes(Utils.encodeMPI(numericOPnum, false)));

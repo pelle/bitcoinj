@@ -47,7 +47,7 @@ public class Block extends Message {
     private static final Logger log = LoggerFactory.getLogger(Block.class);
     private static final long serialVersionUID = 2738848929966035281L;
 
-    /** How many bytes are required to represent a block header. */
+    /** How many bytes are required to represent a block header WITHOUT the trailing 00 length byte. */
     public static final int HEADER_SIZE = 80;
 
     static final long ALLOWED_TIME_DRIFT = 2 * 60 * 60; // Same value as official client.
@@ -380,7 +380,6 @@ public class Block extends Message {
      * @throws IOException
      */
     public byte[] bitcoinSerialize() {
-
         // we have completely cached byte array.
         if (headerBytesValid && transactionBytesValid) {
             Preconditions.checkNotNull(bytes, "Bytes should never be null if headerBytesValid && transactionBytesValid");
@@ -536,7 +535,7 @@ public class Block extends Message {
     @Override
     public String toString() {
         StringBuffer s = new StringBuffer("v" + version + " block: \n" + "   previous block: "
-                + prevBlockHash.toString() + "\n" + "   merkle root: " + getMerkleRoot().toString() + "\n"
+                + getPrevBlockHash().toString() + "\n" + "   merkle root: " + getMerkleRoot().toString() + "\n"
                 + "   time: [" + time + "] " + new Date(time * 1000).toString() + "\n"
                 + "   difficulty target (nBits): " + difficultyTarget + "\n" + "   nonce: " + nonce + "\n");
         if (transactions != null && transactions.size() > 0) {
@@ -578,7 +577,7 @@ public class Block extends Message {
     public BigInteger getDifficultyTargetAsInteger() throws VerificationException {
         maybeParseHeader();
         BigInteger target = Utils.decodeCompactBits(difficultyTarget);
-        if (target.compareTo(BigInteger.valueOf(0)) <= 0 || target.compareTo(params.proofOfWorkLimit) > 0)
+        if (target.compareTo(BigInteger.ZERO) <= 0 || target.compareTo(params.proofOfWorkLimit) > 0)
             throw new VerificationException("Difficulty target is bad: " + target.toString());
         return target;
     }

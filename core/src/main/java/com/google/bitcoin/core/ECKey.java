@@ -323,7 +323,15 @@ public class ECKey implements Serializable {
             // OpenSSL deviates from the DER spec by interpreting these values as unsigned, though they should not be
             // Thus, we always use the positive versions.
             // See: http://r6.ca/blog/20111119T211504Z.html
-            return signer.verifySignature(data, r.getPositiveValue(), s.getPositiveValue());
+            try {
+                return signer.verifySignature(data, r.getPositiveValue(), s.getPositiveValue());
+            } catch (NullPointerException e) {
+                // Bouncy Castle contains a bug that can cause NPEs given specially crafted signatures. Those signatures
+                // are inherently invalid/attack sigs so we just fail them here rather than crash the thread.
+                System.err.println("Caught NPE inside bouncy castle: " + e);
+                e.printStackTrace();
+                return false;
+            }
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -499,7 +507,7 @@ public class ECKey implements Serializable {
         }
         // Compressed keys require you to know an extra bit of data about the y-coord as there are two possibilities.
         // So it's encoded in the recId.
-        ECPoint R = decompressKey(x, recId % 2 == 1);
+        ECPoint R = decompressKey(x, (recId & 1) == 1);
         //   1.4. If nR != point at infinity, then do another iteration of Step 1 (callers responsibility).
         if (!R.multiply(n).isInfinity())
             return null;

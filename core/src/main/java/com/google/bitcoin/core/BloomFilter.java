@@ -16,6 +16,7 @@
 
 package com.google.bitcoin.core;
 
+import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
 
 import java.io.IOException;
@@ -35,7 +36,7 @@ import java.util.Arrays;
 public class BloomFilter extends Message {
     /** The BLOOM_UPDATE_* constants control when the bloom filter is auto-updated by the peer using
         it as a filter, either never, for all outputs or only for pay-2-pubkey outputs (default) */
-    public enum bloomUpdate {
+    public enum BloomUpdate {
         UPDATE_NONE, // 0
         UPDATE_ALL, // 1
         /** Only adds outpoints to the filter if the output is a pay-to-pubkey/pay-to-multisig script */
@@ -64,7 +65,7 @@ public class BloomFilter extends Message {
      * Constructs a filter with the given parameters which is updated on pay2pubkey outputs only.
      */
     public BloomFilter(int elements, double falsePositiveRate, long randomNonce) {
-        this(elements, falsePositiveRate, randomNonce, bloomUpdate.UPDATE_P2PUBKEY_ONLY);
+        this(elements, falsePositiveRate, randomNonce, BloomUpdate.UPDATE_P2PUBKEY_ONLY);
     }
     
     /**
@@ -98,14 +99,14 @@ public class BloomFilter extends Message {
      * 
      * <p>updateFlag is used to control filter behavior</p>
      */
-    public BloomFilter(int elements, double falsePositiveRate, long randomNonce, bloomUpdate updateFlag) {
+    public BloomFilter(int elements, double falsePositiveRate, long randomNonce, BloomUpdate updateFlag) {
         // The following formulas were stolen from Wikipedia's page on Bloom Filters (with the addition of min(..., MAX_...))
         //                        Size required for a given number of elements and false-positive rate
         int size = Math.min((int)(-1  / (Math.pow(Math.log(2), 2)) * elements * Math.log(falsePositiveRate)),
                             (int)MAX_FILTER_SIZE * 8) / 8;
         data = new byte[size <= 0 ? 1 : size];
         // Optimal number of hash functions for a given filter size and element count.
-        hashFuncs = Math.min((int)(data.length * 8 / elements * Math.log(2)), MAX_HASH_FUNCS);
+        hashFuncs = Math.min((int)(data.length * 8 / (double)elements * Math.log(2)), MAX_HASH_FUNCS);
         this.nTweak = randomNonce;
         this.nFlags = (byte)(0xff & updateFlag.ordinal());
     }
@@ -185,10 +186,19 @@ public class BloomFilter extends Message {
         int k1 = 0;
         switch(object.length & 3)
         {
-        case 3: k1 ^= (object[numBlocks + 2] & 0xff) << 16;
-        case 2: k1 ^= (object[numBlocks + 1] & 0xff) << 8;
-        case 1: k1 ^= (object[numBlocks] & 0xff);
+            case 3:
+                k1 ^= (object[numBlocks + 2] & 0xff) << 16;
+                // Fall through.
+            case 2:
+                k1 ^= (object[numBlocks + 1] & 0xff) << 8;
+                // Fall through.
+            case 1:
+                k1 ^= (object[numBlocks] & 0xff);
                 k1 *= c1; k1 = ROTL32(k1,15); k1 *= c2; h1 ^= k1;
+                // Fall through.
+            default:
+                // Do nothing.
+                break;
         };
 
         // finalization
@@ -242,5 +252,10 @@ public class BloomFilter extends Message {
                 Arrays.equals(((BloomFilter)other).data, this.data))
             return true;
         return false;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hashCode(hashFuncs, nTweak, Arrays.hashCode(data));
     }
 }

@@ -212,7 +212,7 @@ public class Peer {
         public void exceptionCaught(ChannelHandlerContext ctx, ExceptionEvent e) throws Exception {
             String s;
             PeerAddress addr = address.get();
-            s = address == null ? "?" : address.toString();
+            s = addr == null ? "?" : addr.toString();
             if (e.getCause() instanceof ConnectException || e.getCause() instanceof IOException) {
                 // Short message for network errors
                 log.info(s + " - " + e.getCause().getMessage());
@@ -240,10 +240,12 @@ public class Peer {
             }
 
             if (m == null) return;
-            
-            if (currentFilteredBlock != null && !(m instanceof Transaction)) {
-                processFilteredBlock(currentFilteredBlock);
-                currentFilteredBlock = null;
+
+            synchronized (Peer.this) {
+                if (currentFilteredBlock != null && !(m instanceof Transaction)) {
+                    processFilteredBlock(currentFilteredBlock);
+                    currentFilteredBlock = null;
+                }
             }
 
             if (m instanceof NotFoundMessage) {
@@ -259,7 +261,9 @@ public class Peer {
                 // messages stream in. We'll call processFilteredBlock when a non-tx message arrives (eg, another
                 // FilteredBlock) or when a tx that isn't needed by that block is found. A ping message is sent after
                 // a getblocks, to force the non-tx message path.
-                currentFilteredBlock = (FilteredBlock)m;
+                synchronized (Peer.this) {
+                    currentFilteredBlock = (FilteredBlock)m;
+                }
             } else if (m instanceof Transaction) {
                 processTransaction((Transaction) m);
             } else if (m instanceof GetDataMessage) {
@@ -360,6 +364,11 @@ public class Peer {
             for (int i = 0; i < m.getBlockHeaders().size(); i++) {
                 Block header = m.getBlockHeaders().get(i);
                 if (header.getTimeSeconds() < fastCatchupTimeSecs) {
+                    if (!downloadData.get()) {
+                        // Not download peer anymore, some other peer probably became better.
+                        log.info("Lost download peer status, throwing away downloaded headers.");
+                        return;
+                    }
                     if (blockChain.add(header)) {
                         // The block was successfully linked into the chain. Notify the user of our progress.
                         invokeOnBlocksDownloaded(header);
@@ -631,7 +640,8 @@ public class Peer {
     }
 
     private synchronized void processBlock(Block m) throws IOException {
-        log.debug("{}: Received broadcast block {}", address.get(), m.getHashAsString());
+        if (log.isDebugEnabled())
+            log.debug("{}: Received broadcast block {}", address.get(), m.getHashAsString());
         try {
             // Was this block requested by getBlock()?
             if (maybeHandleRequestedData(m)) return;
@@ -663,7 +673,13 @@ public class Peer {
                 // chain twice (or more!) on the same connection! The block chain would filter out the duplicates but
                 // only at a huge speed penalty. By finding the orphan root we ensure every getblocks looks the same
                 // no matter how many blocks are solved, and therefore that the (2) duplicate filtering can work.
-                blockChainDownload(blockChain.getOrphanRoot(m.getHash()).getHash());
+                //
+                // We only do this if we are not currently downloading headers. If we are then we don't want to kick
+                // off a request for lots more headers in parallel.
+                if (downloadBlockBodies)
+                    blockChainDownload(blockChain.getOrphanRoot(m.getHash()).getHash());
+                else
+                    log.info("Did not start chain download on solved block due to in-flight header download.");
             }
         } catch (VerificationException e) {
             // We don't want verification failures to kill the thread.
@@ -676,7 +692,8 @@ public class Peer {
 
     // TODO: Fix this duplication.
     private synchronized void processFilteredBlock(FilteredBlock m) throws IOException {
-        log.debug("{}: Received broadcast filtered block {}", address.get(), m.getHash().toString());
+        if (log.isDebugEnabled())
+            log.debug("{}: Received broadcast filtered block {}", address.get(), m.getHash().toString());
         try {
             if (!downloadData.get()) {
                 log.debug("{}: Received block we did not ask for: {}", address.get(), m.getHash().toString());
@@ -818,8 +835,9 @@ public class Peer {
             // disk IO to figure out what we've got. Normally peers will not send us inv for things we already have
             // so we just re-request it here, and if we get duplicates the block chain / wallet will filter them out.
             for (InventoryItem item : blocks) {
-                if (blockChain.isOrphan(item.hash)) {
-                    // If an orphan was re-advertised, ask for more blocks.
+                if (blockChain.isOrphan(item.hash) && downloadBlockBodies) {
+                    // If an orphan was re-advertised, ask for more blocks unless we are not currently downloading
+                    // full block data because we have a getheaders outstanding.
                     blockChainDownload(blockChain.getOrphanRoot(item.hash).getHash());
                 } else {
                     // Don't re-request blocks we already requested. Normally this should not happen. However there is
@@ -948,8 +966,6 @@ public class Peer {
     private Sha256Hash lastGetBlocksBegin, lastGetBlocksEnd;
 
     private synchronized void blockChainDownload(Sha256Hash toHash) throws IOException {
-        // This may run in ANY thread.
-
         // The block chain download process is a bit complicated. Basically, we start with one or more blocks in a
         // chain that we have from a previous session. We want to catch up to the head of the chain BUT we don't know
         // where that chain is up to or even if the top block we have is even still in the chain - we

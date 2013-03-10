@@ -139,7 +139,7 @@ public class PeerGroup extends AbstractIdleService {
     // The false positive rate for bloomFilter
     private double bloomFilterFPRate = DEFAULT_BLOOM_FILTER_FP_RATE;
     // We use a constant tweak to avoid giving up privacy when we regenerate our filter with new keys
-    private final long bloomFilterTweak = new Random().nextLong();
+    private final long bloomFilterTweak = (long) (Math.random() * Long.MAX_VALUE);
     private int lastBloomFilterElementCount;
     
     /**
@@ -570,7 +570,7 @@ public class PeerGroup extends AbstractIdleService {
             elements += w.getBloomFilterElementCount();
         }
 
-        if (chain == null || !chain.shouldVerifyTransactions()) {
+        if (chain == null || !chain.shouldVerifyTransactions() && elements > 0) {
             // We stair-step our element count so that we avoid creating a filter with different parameters
             // as much as possible as that results in a loss of privacy.
             // The constant 100 here is somewhat arbitrary, but makes sense for small to medium wallets -
@@ -587,7 +587,7 @@ public class PeerGroup extends AbstractIdleService {
                     peer.sendMessage(filter);
                 } catch (IOException e) { }
         }
-        //Do this last so that bloomFilter is already set when it gets called
+        // Do this last so that bloomFilter is already set when it gets called.
         setFastCatchupTimeSecs(earliestKeyTime);
     }
     
@@ -596,9 +596,10 @@ public class PeerGroup extends AbstractIdleService {
      * Be careful regenerating the bloom filter too often, as it decreases anonymity because remote nodes can
      * compare transactions against both the new and old filters to significantly decrease the false positive rate.
      * 
-     * See the docs for {@link BloomFilter#BloomFilter(int, double)} for a brief explanation of anonymity when using bloom filters.
+     * See the docs for {@link BloomFilter#BloomFilter(int, double, long)} for a brief explanation of anonymity when
+     * using bloom filters.
      */
-    public void setBloomFilterFalsePositiveRate(double bloomFilterFPRate) {
+    public synchronized void setBloomFilterFalsePositiveRate(double bloomFilterFPRate) {
         this.bloomFilterFPRate = bloomFilterFPRate;
         recalculateFastCatchupAndFilter();
     }
@@ -1222,7 +1223,7 @@ public class PeerGroup extends AbstractIdleService {
     protected Peer selectDownloadPeer(List<Peer> origPeers) {
         // Characteristics to select for in order of importance:
         //  - Chain height is reasonable (majority of nodes)
-        //  - Highest protocol version (more likely to be maintained, have the features we want)
+        //  - High enough protocol version for the features we want (but we'll settle for less)
         //  - Ping time.
         List<Peer> peers;
         synchronized (origPeers) {
@@ -1236,15 +1237,19 @@ public class PeerGroup extends AbstractIdleService {
         for (Peer peer : peers) {
             if (peer.getBestHeight() == mostCommonChainHeight) candidates.add(peer);
         }
-        // Of the candidates, find the highest protocol version. Snapshot their ping times (so they don't change
-        // whilst sorting) and then sort to find the lowest.
-        int highestVersion = 0;
+        // Of the candidates, find the peers that meet the minimum protocol version we want to target. We could select
+        // the highest version we've seen on the assumption that newer versions are always better but we don't want to
+        // zap peers if they upgrade early. If we can't find any peers that have our preferred protocol version or
+        // better then we'll settle for the highest we found instead.
+        int highestVersion = 0, preferredVersion = 0;
+        final int PREFERRED_VERSION = FilteredBlock.MIN_PROTOCOL_VERSION;
         for (Peer peer : candidates) {
             highestVersion = Math.max(peer.getPeerVersionMessage().clientVersion, highestVersion);
+            preferredVersion = Math.min(highestVersion, PREFERRED_VERSION);
         }
         List<PeerAndPing> candidates2 = new ArrayList<PeerAndPing>();
         for (Peer peer : candidates) {
-            if (peer.getPeerVersionMessage().clientVersion == highestVersion) {
+            if (peer.getPeerVersionMessage().clientVersion >= preferredVersion) {
                 PeerAndPing pap = new PeerAndPing();
                 pap.peer = peer;
                 pap.pingTime = peer.getPingTime();
