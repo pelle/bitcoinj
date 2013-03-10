@@ -32,12 +32,8 @@ import java.util.List;
 // Originally written for Apache Derby, but its DELETE (and general) performance was awful
 
 /**
- * A full pruned block store using the Postgres pure-java embedded database.
+ * A full pruned block store using the Postgres database.
  * 
- * Note that because of the heavy delete load on the database, during IBD,
- * you may see the database files grow quite large (around 1.5G).
- * Postgres automatically frees some space at shutdown, so close()ing the database
- * decreases the space usage somewhat (to only around 1.3G).
  */
 public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
     private static final Logger log = LoggerFactory.getLogger(PostgresFullPrunedBlockStore.class);
@@ -50,18 +46,17 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
     private ThreadLocal<Connection> conn;
     private List<Connection> allConnections;
     private String connectionURL;
-    private int fullStoreDepth;
 
     static final String driver = "org.postgresql.Driver";
     static final String CREATE_SETTINGS_TABLE = "CREATE TABLE settings ( "
         + "name VARCHAR(32) NOT NULL CONSTRAINT settings_pk PRIMARY KEY,"
-        + "value BYTEA"
+        + "value VARCHAR"
         + ")";
     static final String CHAIN_HEAD_SETTING = "chainhead";
     static final String VERIFIED_CHAIN_HEAD_SETTING = "verifiedchainhead";
 
     static final String CREATE_HEADERS_TABLE = "CREATE TABLE headers ( "
-        + "hash BYTEA NOT NULL CONSTRAINT headers_pk PRIMARY KEY,"
+        + "hash VARCHAR NOT NULL CONSTRAINT headers_pk PRIMARY KEY,"
         + "chainWork BYTEA NOT NULL,"
         + "height INT NOT NULL,"
         + "header BYTEA NOT NULL,"
@@ -69,7 +64,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
         + ")";
 
     static final String CREATE_UNDOABLE_TABLE = "CREATE TABLE undoableBlocks ( "
-        + "hash BYTEA NOT NULL CONSTRAINT undoableBlocks_pk PRIMARY KEY,"
+        + "hash VARCHAR NOT NULL CONSTRAINT undoableBlocks_pk PRIMARY KEY,"
         + "height INT NOT NULL,"
         + "txOutChanges BYTEA,"
         + "transactions BYTEA"
@@ -77,7 +72,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
     static final String CREATE_UNDOABLE_TABLE_INDEX = "CREATE INDEX heightIndex ON undoableBlocks (height)";
 
     static final String CREATE_OPEN_OUTPUT_INDEX_TABLE = "CREATE TABLE openOutputsIndex ("
-        + "hash bytea NOT NULL CONSTRAINT openOutputsIndex_pk PRIMARY KEY,"
+        + "hash VARCHAR NOT NULL CONSTRAINT openOutputsIndex_pk PRIMARY KEY,"
         + "height INT NOT NULL,"
         + "id BIGSERIAL"
         + ")";
@@ -86,20 +81,21 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
         + "index INT NOT NULL,"
         + "value BYTEA NOT NULL,"
         + "scriptBytes BYTEA NOT NULL,"
+        + "recipient VARCHAR,"
         + "PRIMARY KEY (id, index)"
 //        + ", CONSTRAINT openOutputs_fk FOREIGN KEY (id) REFERENCES openOutputsIndex(id)"
         + ")";
+
+    static final String CREATE_OUTPUT_RECIPIENT_INDEX = "CREATE INDEX recipientIndex ON openOutputs (recipient)";
 
     /**
      * Creates a new PostgresFullPrunedBlockStore
      * @param params A copy of the NetworkParameters used
      * @param dbName The path to the database on disk
-     * @param fullStoreDepth The number of blocks of history stored in full (something like 1000 is pretty safe)
      * @throws com.google.bitcoin.store.BlockStoreException if the database fails to open for any reason
      */
-    public PostgresFullPrunedBlockStore(NetworkParameters params, String dbName, int fullStoreDepth) throws BlockStoreException {
+    public PostgresFullPrunedBlockStore(NetworkParameters params, String dbName) throws BlockStoreException {
         this.params = params;
-        this.fullStoreDepth = fullStoreDepth;
         connectionURL = "jdbc:postgresql:" + dbName ;
 
         conn = new ThreadLocal<Connection>();
@@ -185,6 +181,9 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
         log.debug("PostgresFullPrunedBlockStore : CREATE open output table");
         s.executeUpdate(CREATE_OPEN_OUTPUT_TABLE);
 
+        log.debug("PostgresFullPrunedBlockStore : CREATE recipient index");
+        s.executeUpdate(CREATE_OUTPUT_RECIPIENT_INDEX);
+
         s.executeUpdate("INSERT INTO settings(name, value) VALUES('" + CHAIN_HEAD_SETTING + "', NULL)");
         s.executeUpdate("INSERT INTO settings(name, value) VALUES('" + VERIFIED_CHAIN_HEAD_SETTING + "', NULL)");
         s.close();
@@ -197,7 +196,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
         if (!rs.next()) {
             throw new BlockStoreException("corrupt Postgres block store - no chain head pointer");
         }
-        Sha256Hash hash = new Sha256Hash(rs.getBytes(1));
+        Sha256Hash hash = new Sha256Hash(rs.getString(1));
         rs.close();
         this.chainHeadBlock = get(hash);
         this.chainHeadHash = hash;
@@ -210,7 +209,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
         if (!rs.next()) {
             throw new BlockStoreException("corrupt Postgres block store - no verified chain head pointer");
         }
-        hash = new Sha256Hash(rs.getBytes(1));
+        hash = new Sha256Hash(rs.getString(1));
         rs.close();
         s.close();
         this.verifiedChainHeadBlock = get(hash);
@@ -265,7 +264,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
         ResultSet rs = s.executeQuery("SELECT name, value FROM settings");
         while (rs.next()) {
             size += rs.getString(1).length();
-            size += rs.getBytes(2).length;
+            size += rs.getString(2).length();
             count++;
         }
         rs.close();
@@ -339,9 +338,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
                     conn.get().prepareStatement("INSERT INTO headers(hash, chainWork, height, header, wasUndoable)"
                             + " VALUES(?, ?, ?, ?, ?)");
             // We skip the first 4 bytes because (on prodnet) the minimum target has 4 0-bytes
-            byte[] hashBytes = new byte[28];
-            System.arraycopy(storedBlock.getHeader().getHash().getBytes(), 3, hashBytes, 0, 28);
-            s.setBytes(1, hashBytes);
+            s.setString(1, storedBlock.getHeader().getHashAsString());
             s.setBytes(2, storedBlock.getChainWork().toByteArray());
             s.setInt(3, storedBlock.getHeight());
             s.setBytes(4, storedBlock.getHeader().unsafeBitcoinSerialize());
@@ -356,10 +353,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
             
             PreparedStatement s = conn.get().prepareStatement("UPDATE headers SET wasUndoable=? WHERE hash=?");
             s.setBoolean(1, true);
-            // We skip the first 4 bytes because (on prodnet) the minimum target has 4 0-bytes
-            byte[] hashBytes = new byte[28];
-            System.arraycopy(storedBlock.getHeader().getHash().getBytes(), 3, hashBytes, 0, 28);
-            s.setBytes(2, hashBytes);
+            s.setString(2, storedBlock.getHeader().getHashAsString());
             s.executeUpdate();
             s.close();
         }
@@ -377,8 +371,6 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
     public void put(StoredBlock storedBlock, StoredUndoableBlock undoableBlock) throws BlockStoreException {
         maybeConnect();
         // We skip the first 4 bytes because (on prodnet) the minimum target has 4 0-bytes
-        byte[] hashBytes = new byte[28];
-        System.arraycopy(storedBlock.getHeader().getHash().getBytes(), 3, hashBytes, 0, 28);
         int height = storedBlock.getHeight();
         byte[] transactions = null;
         byte[] txOutChanges = null;
@@ -415,7 +407,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
                                                     + " VALUES(?, ?, ?)");
                     s.setBytes(3, transactions);
                 }
-                s.setBytes(1, hashBytes);
+                s.setString(1, storedBlock.getHeader().getHashAsString());
                 s.setInt(2, height);
                 s.executeUpdate();
                 s.close();
@@ -432,7 +424,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
                 PreparedStatement s =
                         conn.get().prepareStatement("UPDATE undoableBlocks SET txOutChanges=?, transactions=?"
                                 + " WHERE hash = ?");
-                s.setBytes(3, hashBytes);
+                s.setString(3, storedBlock.getHeader().getHashAsString());
                 if (transactions == null) {
                     s.setBytes(1, txOutChanges);
                     s.setNull(2, Types.BLOB);
@@ -460,9 +452,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
             s = conn.get()
                 .prepareStatement("SELECT chainWork, height, header, wasUndoable FROM headers WHERE hash = ?");
             // We skip the first 4 bytes because (on prodnet) the minimum target has 4 0-bytes
-            byte[] hashBytes = new byte[28];
-            System.arraycopy(hash.getBytes(), 3, hashBytes, 0, 28);
-            s.setBytes(1, hashBytes);
+            s.setString(1, hash.toString());
             ResultSet results = s.executeQuery();
             if (!results.next()) {
                 return null;
@@ -510,9 +500,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
             s = conn.get()
                 .prepareStatement("SELECT txOutChanges, transactions FROM undoableBlocks WHERE hash = ?");
             // We skip the first 4 bytes because (on prodnet) the minimum target has 4 0-bytes
-            byte[] hashBytes = new byte[28];
-            System.arraycopy(hash.getBytes(), 3, hashBytes, 0, 28);
-            s.setBytes(1, hashBytes);
+            s.setString(1, hash.toString());
             ResultSet results = s.executeQuery();
             if (!results.next()) {
                 return null;
@@ -575,7 +563,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
             PreparedStatement s = conn.get()
                 .prepareStatement("UPDATE settings SET value = ? WHERE name = ?");
             s.setString(2, CHAIN_HEAD_SETTING);
-            s.setBytes(1, hash.getBytes());
+            s.setString(1, hash.toString());
             s.executeUpdate();
             s.close();
         } catch (SQLException ex) {
@@ -596,7 +584,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
             PreparedStatement s = conn.get()
                 .prepareStatement("UPDATE settings SET value = ? WHERE name = ?");
             s.setString(2, VERIFIED_CHAIN_HEAD_SETTING);
-            s.setBytes(1, hash.getBytes());
+            s.setString(1, hash.toString());
             s.executeUpdate();
             s.close();
         } catch (SQLException ex) {
@@ -604,7 +592,6 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
         }
         if (this.chainHeadBlock.getHeight() < chainHead.getHeight())
             setChainHead(chainHead);
-        removeUndoableBlocksWhereHeightIsLessThan(chainHead.getHeight() - fullStoreDepth);
     }
 
     private void removeUndoableBlocksWhereHeightIsLessThan(int height) throws BlockStoreException {
@@ -627,7 +614,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
                 .prepareStatement("SELECT openOutputsIndex.height, openOutputs.value, openOutputs.scriptBytes " +
                 		"FROM openOutputsIndex NATURAL JOIN openOutputs " +
                 		"WHERE openOutputsIndex.hash = ? AND openOutputs.index = ?");
-            s.setBytes(1, hash.getBytes());
+            s.setString(1, hash.toString());
             // index is actually an unsigned int
             s.setInt(2, (int)index);
             ResultSet results = s.executeQuery();
@@ -657,7 +644,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
             try {
                 s = conn.get().prepareStatement("INSERT INTO openOutputsIndex(hash, height)"
                         + " VALUES(?, ?)");
-                s.setBytes(1, out.getHash().getBytes());
+                s.setString(1, out.getHash().toString());
                 s.setInt(2, out.getHeight());
                 s.executeUpdate();
             } catch (SQLException e) {
@@ -668,14 +655,23 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
                     s.close();
             }
             
-            s = conn.get().prepareStatement("INSERT INTO openOutputs (id, index, value, scriptBytes) " +
+            s = conn.get().prepareStatement("INSERT INTO openOutputs (id, index, value, scriptBytes, recipient) " +
             		"VALUES ((SELECT id FROM openOutputsIndex WHERE hash = ?), " +
-            		"?, ?, ?)");
-            s.setBytes(1, out.getHash().getBytes());
+            		"?, ?, ?, ?)");
+            s.setString(1, out.getHash().toString());
             // index is actually an unsigned int
             s.setInt(2, (int)out.getIndex());
             s.setBytes(3, out.getValue().toByteArray());
             s.setBytes(4, out.getScriptBytes());
+
+            try {
+                Script script = new Script(params, out.getScriptBytes(), 0, out.getScriptBytes().length);
+                s.setString(5, script.getToAddress().toString());
+            } catch (ScriptException e) {
+                log.warn("PostgresFullPrunedBlockStore : addUnspentTransactionOutput",e);
+//                s.setNull(5,Types.VARCHAR);
+                s.setString(5, e.getMessage());
+            }
             s.executeUpdate();
             s.close();
         } catch (SQLException e) {
@@ -698,7 +694,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
             PreparedStatement s = conn.get()
                 .prepareStatement("DELETE FROM openOutputs " +
                 		"WHERE id = (SELECT id FROM openOutputsIndex WHERE hash = ?) AND index = ?");
-            s.setBytes(1, out.getHash().getBytes());
+            s.setString(1, out.getHash().toString());
             // index is actually an unsigned int
             s.setInt(2, (int)out.getIndex());
             s.executeUpdate();
@@ -708,8 +704,8 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
             s = conn.get().prepareStatement("DELETE FROM openOutputsIndex " +
                             "WHERE hash = ? AND 1 = (CASE WHEN ((SELECT COUNT(*) FROM openOutputs WHERE id =" +
                             "(SELECT id FROM openOutputsIndex WHERE hash = ?)) = 0) THEN 1 ELSE 0 END)");
-            s.setBytes(1, out.getHash().getBytes());
-            s.setBytes(2, out.getHash().getBytes());
+            s.setString(1, out.getHash().toString());
+            s.setString(2, out.getHash().toString());
             s.executeUpdate();
             s.close();
         } catch (SQLException e) {
@@ -753,7 +749,7 @@ public class PostgresFullPrunedBlockStore implements FullPrunedBlockStore {
             s = conn.get()
                 .prepareStatement("SELECT COUNT(*) FROM openOutputsIndex " +
                         "WHERE hash = ?");
-            s.setBytes(1, hash.getBytes());
+            s.setString(1, hash.toString());
             ResultSet results = s.executeQuery();
             if (!results.next()) {
                 throw new BlockStoreException("Got no results from a COUNT(*) query");
