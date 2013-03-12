@@ -578,7 +578,7 @@ public class Script {
      */
     public byte[] getPubKeyHash() throws ScriptException {
         if (!isSentToAddress())
-            throw new ScriptException("Script not in the standard scriptPubKey form");
+            return Utils.sha256hash160(getPubKey());
         // Otherwise, the third element is the hash of the public key, ie the bitcoin address.
         return chunks.get(2).data;
     }

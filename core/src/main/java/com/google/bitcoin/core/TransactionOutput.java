@@ -151,7 +151,17 @@ public class TransactionOutput extends ChildMessage implements Serializable {
         return value;
     }
 
-    int getIndex() {
+    /**
+     * Returns the address of the recipient of this output
+     */
+    public Address getToAddress() throws ScriptException {
+        return getScriptPubKey().getToAddress();
+    }
+
+    /**
+     * @return the index of output within transaction
+     */
+    public int getIndex() {
         checkNotNull(parentTransaction);
         for (int i = 0; i < parentTransaction.getOutputs().size(); i++) {
             if (parentTransaction.getOutputs().get(i) == this)
