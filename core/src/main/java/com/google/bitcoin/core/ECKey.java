@@ -657,6 +657,9 @@ public class ECKey implements Serializable {
         }
     }
 
+    public BigInteger getPrivateKey() {
+        return priv;
+    }
     /**
      * Returns a 32 byte array containing the private key.
      */
